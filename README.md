@@ -19,9 +19,12 @@
   <a href="https://chromewebstore.google.com/detail/ofklpccfpgecjdccbnlmjbndkefgjaid"><b>➡️ Install from the Chrome Web Store</b></a>
 </p>
 
+<!-- Demo GIF: record it with docs/RECORDING.md, save as docs/demo.gif, then uncomment this block.
 <p align="center">
   <img src="docs/demo.gif" width="640" alt="Paste Typer typing clipboard text into a field that blocks paste">
 </p>
+-->
+
 
 ---
 
