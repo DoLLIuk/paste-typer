@@ -1,103 +1,143 @@
-# Paste Typer - Chrome Extension
+<h1 align="center">
+  <img src="icon128.png" width="72" alt="Paste Typer">
+  <br>Paste Typer
+</h1>
 
-A Chrome extension that types clipboard text character-by-character into web forms.
-Useful for fields that don't accept paste, for accessibility, and for data-entry workflows.
+<p align="center">
+  <b>Paste into sites that block pasting.</b><br>
+  A Chrome extension that types your clipboard out character-by-character, like a human would.
+</p>
 
-**[➡️ Install from the Chrome Web Store](https://chromewebstore.google.com/detail/ofklpccfpgecjdccbnlmjbndkefgjaid)**
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/ofklpccfpgecjdccbnlmjbndkefgjaid"><img src="https://img.shields.io/badge/Chrome%20Web%20Store-Install-4285F4?logo=googlechrome&logoColor=white" alt="Chrome Web Store"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/Manifest-V3-orange.svg" alt="Manifest V3">
+  <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
+</p>
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/ofklpccfpgecjdccbnlmjbndkefgjaid"><b>➡️ Install from the Chrome Web Store</b></a>
+</p>
+
+<p align="center">
+  <img src="docs/demo.gif" width="640" alt="Paste Typer typing clipboard text into a field that blocks paste">
+</p>
+
+---
+
+## Why
+
+Some sites disable paste. Banking portals, exam platforms, government forms, "confirm your email" fields, admin panels that call `preventDefault()` on every paste event. You end up retyping a 40-character password or a long ID by hand.
+
+Paste Typer types it for you. It dispatches real `keydown` / `keypress` / `input` / `keyup` events one character at a time, with human-like timing, so the page sees typing instead of a paste.
 
 ## Features
 
-- **Human-like typing simulation** with variable speed and natural pauses
-- **Clipboard integration** - load text directly from clipboard
-- **Right-click context menu** - "Paste as typed text" on any editable field
-- **Adjustable typing speed and typo rate**
-- **Floating in-page UI** with drag support, styled inside a Shadow DOM
-- **Input navigation mode** to step through editable fields on the page
+- **Types your clipboard** into any field, character by character
+- **Human-like timing** with variable speed and natural pauses
+- **Right-click → "Paste as typed text"** on any editable field
+- **Adjustable speed and typo rate**
+- **Floating in-page UI**, draggable, isolated in a Shadow DOM
 - **Google Docs and Slides support** via a canvas-editor adapter
-- **Visual feedback** - status messages, progress bar, active-element info
+- **Input navigation mode** to step through editable fields on a page
+- **Zero dependencies, zero network requests** — everything runs locally
 
-## Installation
+## Install
 
-### Load as unpacked extension (developer mode)
+**Chrome Web Store (recommended)** — [install here](https://chromewebstore.google.com/detail/ofklpccfpgecjdccbnlmjbndkefgjaid)
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable "Developer mode" (top right)
-3. Click "Load unpacked"
-4. Select the `paste-typer` folder
-5. The extension will appear in your extensions list
+**From source**
 
-### Using the extension
+```bash
+git clone https://github.com/ZonaHu/paste-typer.git
+```
 
-1. **Popup**: Click the extension icon in the toolbar
-   - Load text from clipboard or type manually
-   - Adjust speed / typo rate
-   - Click an input field on the page
-   - Click "Start"
+1. Open `chrome://extensions/`
+2. Enable **Developer mode** (top right)
+3. Click **Load unpacked** and select the `paste-typer` folder
 
-2. **Right-click menu**:
-   - Copy text to clipboard
-   - Right-click an input field
-   - Select "Paste as typed text"
+## Usage
 
-3. **Floating UI**:
-   - Open via the popup's "Open Floating UI" button
-   - Drag the header to reposition; position persists per profile
+**Popup** — click the toolbar icon, load from clipboard or type text, click an input field on the page, hit Start.
 
-## Files Included
+**Right-click menu** — copy text, right-click the target field, choose "Paste as typed text".
 
-- `manifest.json` - Extension configuration (MV3)
-- `background.js` - Service worker: context menu + clipboard read helper
-- `content.js` - Main typing engine, floating-UI host, message handlers
-- `content/` - Input adapters
-  - `inputAdapter.js` - Base adapter interface
-  - `standardInputAdapter.js` - Default `<input>` / `<textarea>` / contenteditable adapter
-  - `googleDocsAdapter.js` - Google Docs-specific adapter
-  - `adapterManager.js` - Picks the right adapter for the page
-- `popup.html`, `popup.js` - Toolbar popup UI
-- `floating-ui.html`, `floating-ui.js` - In-page floating UI (loaded via web-accessible resources)
-- `icon16.png` / `icon32.png` / `icon48.png` / `icon96.png` / `icon128.png` - Extension icons
-- `README.md` - This file
+**Floating UI** — open it from the popup when you need the controls to stay visible while you work.
 
-## How It Works
+## Supported fields
 
-1. Content script is injected into the active tab on demand, only when you
-   invoke the extension (popup, right-click menu, or floating UI)
-2. Adapter manager selects an input adapter for the current site
-3. Adapter focuses the target field and types one character at a time
-4. Each character dispatches the proper `keydown` / `keypress` / `input` / `keyup` events
-5. Random delays, pauses, and (optionally) typos simulate human input
+| Field type | Supported |
+|---|---|
+| `<input>` (text, email, password, search, url, tel) | ✅ |
+| `<textarea>` | ✅ |
+| `contenteditable` | ✅ |
+| Google Docs / Slides canvas | ✅ |
 
-## Supported Elements
+## How it works
 
-- Text inputs (`<input type="text">`, `email`, `password`, `search`, `url`, `tel`)
-- `<textarea>`
-- `contenteditable` elements (including the Google Docs and Slides canvas)
+The content script is injected on demand, only when you invoke the extension. An adapter manager picks the right input adapter for the page, focuses the target field, and types one character at a time — dispatching the full keyboard event sequence for each character, with randomized delays and optional typos so the input looks human.
 
-## Permissions
-
-- `activeTab` - Grants access to the focused tab only when you invoke the extension
-- `storage` - Save user preferences (text, speed, typo rate, floating UI position)
-- `contextMenus` - "Paste as typed text" right-click menu on editable fields
-- `scripting` - Inject the content script into the active tab on demand
-- `clipboardRead` - Read the clipboard when you click "Load from Clipboard"
-
-The extension requests no broad host permissions. It cannot read or run on any
-site until you explicitly invoke it on that tab, at which point `activeTab`
-grants temporary access to that one tab.
-
-The clipboard is read only when you click "Load from Clipboard" (or use the
-context menu). Its contents go into the extension's text field and are never
-transmitted anywhere.
+```
+manifest.json        MV3 config
+background.js        service worker: context menu + clipboard helper
+content.js           typing engine, floating-UI host, message handlers
+content/
+  inputAdapter.js          base adapter interface
+  standardInputAdapter.js  <input> / <textarea> / contenteditable
+  googleDocsAdapter.js     Google Docs & Slides canvas editor
+  adapterManager.js        picks the adapter for the page
+popup.html / popup.js              toolbar popup
+floating-ui.html / floating-ui.js  in-page floating UI
+```
 
 ## Privacy
 
-- No external network requests. Everything runs locally.
-- Clipboard is read only when the user clicks "Load from Clipboard" or the context menu.
-- Settings stored in `chrome.storage.local` (browser-local, not synced).
+No network requests. No analytics. No accounts.
+
+- The clipboard is read **only** when you click "Load from Clipboard" or use the context menu
+- No broad host permissions — `activeTab` grants access to one tab, only when you invoke the extension
+- Settings live in `chrome.storage.local` (browser-local, not synced)
+
+Full details in [PRIVACY.md](PRIVACY.md).
+
+<details>
+<summary><b>Permissions, explained</b></summary>
+
+| Permission | Why |
+|---|---|
+| `activeTab` | Access the focused tab only when you invoke the extension |
+| `storage` | Save your preferences (text, speed, typo rate, UI position) |
+| `contextMenus` | The "Paste as typed text" right-click item |
+| `scripting` | Inject the content script into the active tab on demand |
+| `clipboardRead` | Read the clipboard when you click "Load from Clipboard" |
+
+</details>
 
 ## Troubleshooting
 
-- **Nothing happens**: Click into an editable field first, then press Start.
-- **Clipboard read fails**: The browser may require a user gesture; click "Load from Clipboard" directly.
-- **Speed feels wrong**: Adjust the slider in the popup or floating UI.
-- **Field not detected**: Use "Navigate Inputs" to step through editable fields on the page.
+| Problem | Fix |
+|---|---|
+| Nothing happens | Click into an editable field first, then press Start |
+| Clipboard read fails | The browser needs a user gesture — click "Load from Clipboard" directly |
+| Field not detected | Use "Navigate Inputs" to step through editable fields |
+| Speed feels wrong | Adjust the slider in the popup or floating UI |
+
+## Contributing
+
+Issues and PRs welcome, especially new site adapters. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Found a site where it doesn't work? [Open an issue](https://github.com/ZonaHu/paste-typer/issues/new/choose) with the URL.
+
+## Disclaimer
+
+Built for accessibility and legitimate data entry: password managers that can't autofill, long IDs, forms that block paste for no good reason. Don't use it to break the rules of exam platforms or any site whose terms you've agreed to.
+
+## License
+
+MIT © [ZonaHu](https://github.com/ZonaHu)
+
+---
+
+<p align="center">
+  If this saved you from retyping something, a ⭐ helps other people find it.
+</p>

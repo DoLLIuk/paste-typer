@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure Portal — Paste Disabled</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;
+    background:#f4f6f9;min-height:100vh;display:flex;align-items:center;
+    justify-content:center;padding:40px;color:#1a2233}
+  .card{background:#fff;border-radius:14px;padding:44px;width:100%;max-width:460px;
+    box-shadow:0 12px 40px rgba(20,30,50,.10)}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .logo{width:32px;height:32px;border-radius:8px;background:#1a56db;color:#fff;
+    display:grid;place-items:center;font-weight:700;font-size:16px}
+  h1{font-size:21px;font-weight:650;letter-spacing:-.01em}
+  .sub{color:#69748a;font-size:14.5px;margin:8px 0 30px;line-height:1.5}
+  label{display:block;font-size:13.5px;font-weight:600;margin-bottom:7px;color:#39445a}
+  input{width:100%;padding:13px 15px;font-size:16px;border:1.5px solid #d6dce6;
+    border-radius:9px;font-family:ui-monospace,'SF Mono',Menlo,monospace;
+    transition:border-color .15s, box-shadow .15s;outline:none}
+  input:focus{border-color:#1a56db;box-shadow:0 0 0 3.5px rgba(26,86,219,.13)}
+  .field{margin-bottom:22px}
+  .hint{font-size:12.5px;color:#8b95a8;margin-top:6px}
+  button{width:100%;padding:13px;background:#1a56db;color:#fff;border:none;
+    border-radius:9px;font-size:15.5px;font-weight:600;cursor:pointer;margin-top:6px}
+  button:hover{background:#1747b8}
+  .toast{position:fixed;top:26px;left:50%;transform:translateX(-50%) translateY(-140%);
+    background:#c81e1e;color:#fff;padding:13px 22px;border-radius:9px;font-size:14.5px;
+    font-weight:500;box-shadow:0 8px 26px rgba(200,30,30,.32);
+    transition:transform .28s cubic-bezier(.2,.9,.3,1);z-index:100}
+  .toast.show{transform:translateX(-50%) translateY(0)}
+  .note{margin-top:26px;padding-top:20px;border-top:1px solid #eef1f5;
+    font-size:12.5px;color:#8b95a8;line-height:1.55}
+  .note b{color:#69748a}
+</style>
+</head>
+<body>
+<div class="toast" id="toast">🚫 Pasting is disabled in this field</div>
+
+<div class="card">
+  <div class="brand"><div class="logo">S</div><h1>Secure Portal</h1></div>
+  <p class="sub">Verify your account. For security reasons, pasting is disabled — please type each value manually.</p>
+
+  <div class="field">
+    <label for="acct">Account number</label>
+    <input id="acct" class="nopaste" autocomplete="off" spellcheck="false" placeholder="0000-0000-0000">
+    <div class="hint">16 digits, no spaces</div>
+  </div>
+
+  <div class="field">
+    <label for="ref">Reference code</label>
+    <input id="ref" class="nopaste" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX">
+    <div class="hint">From your confirmation email</div>
+  </div>
+
+  <button type="button">Verify account</button>
+
+  <p class="note"><b>This is a demo page for Paste Typer.</b> It blocks paste, drop, and
+  auto-fill the same way real banking and government portals do. Use it to test the
+  extension or record a demo without touching a real site.</p>
+</div>
+
+<script>
+  const toast = document.getElementById('toast');
+  let t;
+  function block(e) {
+    e.preventDefault();
+    toast.classList.add('show');
+    clearTimeout(t);
+    t = setTimeout(() => toast.classList.remove('show'), 2200);
+    return false;
+  }
+  document.querySelectorAll('.nopaste').forEach(el => {
+    ['paste', 'drop'].forEach(ev => el.addEventListener(ev, block));
+    // Also block Ctrl/Cmd+V at the key level, like stricter portals do.
+    el.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') block(e);
+    });
+  });
+</script>
+</body>
+</html>
