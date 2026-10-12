@@ -1,0 +1,127 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const assert = require('node:assert/strict');
+const os = require('node:os');
+const root = path.resolve(__dirname, '..');
+const dependencies = path.resolve(process.env.PT_TEST_DEPS || path.join(root, '.local-analysis/harness'));
+const { chromium } = require(path.join(dependencies, 'node_modules/playwright'));
+const monacoRoot = path.join(path.resolve(process.env.PT_MONACO_DEPS || dependencies), 'node_modules/monaco-editor');
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-typer-test-'));
+const extension = path.join(scratch, 'extension');
+fs.mkdirSync(extension, {recursive:true});
+for (const entry of fs.readdirSync(root, {withFileTypes:true})) {
+  if (entry.isFile() && /\.(js|html|json|png)$/.test(entry.name)) fs.copyFileSync(path.join(root,entry.name), path.join(extension,entry.name));
+}
+fs.cpSync(path.join(root,'content'), path.join(extension,'content'), {recursive:true});
+const manifest = JSON.parse(fs.readFileSync(path.join(extension,'manifest.json')));
+// Only the disposable test copy has pregranted local hosts. Shipped permissions
+// are optional, and their denial/request behavior is tested separately.
+manifest.host_permissions = ['http://127.0.0.1/*','http://localhost/*'];
+fs.writeFileSync(path.join(extension,'manifest.json'), JSON.stringify(manifest));
+const editorHtml = `<!doctype html><html><body><div id="one" style="height:250px"></div><div id="two" style="height:250px"></div>
+<script src="/vs/loader.js"></script><script>
+require.config({paths:{vs:'/vs'}});require(['vs/editor/editor.main'],function(){
+window.editors=[monaco.editor.create(document.getElementById('one'),{value:'abcdef',language:'plaintext',automaticLayout:true,editContext:false}),monaco.editor.create(document.getElementById('two'),{value:'SECOND',language:'plaintext',automaticLayout:true,editContext:false})];
+editors[0].setPosition({lineNumber:1,column:4});editors[0].focus();window.ready=true;
+});</script></body></html>`;
+const server = http.createServer((req,res)=>{
+  if(req.url === '/editor') {res.setHeader('Content-Type','text/html');res.end(editorHtml);return;}
+  if(req.url.startsWith('/vs/')) {
+    const file=path.join(monacoRoot,'min',req.url.split('?')[0]);
+    if(!fs.existsSync(file)){res.statusCode=404;res.end();return;}
+    res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'application/octet-stream');fs.createReadStream(file).pipe(res);return;
+  }
+  res.setHeader('Content-Type','text/html');res.end(`<html><body><textarea id="outside">OUTSIDE</textarea><iframe title="Editor" src="http://localhost:${server.address().port}/editor" style="width:900px;height:600px"></iframe></body></html>`);
+});
+(async()=>{
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const port=server.address().port;
+ const profile=path.join(scratch,'profile');
+ let context;
+ try{
+  context=await chromium.launchPersistentContext(profile,{headless:true,channel:'chrome',ignoreDefaultArgs:['--disable-extensions'],args:['--enable-unsafe-extension-debugging']});
+  const cdp=await context.browser().newBrowserCDPSession();
+  const extensionInfo=await cdp.send('Extensions.loadUnpacked',{path:extension});
+  const worker=context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', {timeout:5000});
+  const page=await context.newPage(); await page.goto(`http://127.0.0.1:${port}/`);
+  const editor=page.frame({url:new RegExp('/editor$')}); await editor.waitForFunction(()=>window.ready);
+  const tabId=await worker.evaluate(async()=>{const tabs=await chrome.tabs.query({});return tabs.find(t=>t.url?.startsWith('http://127.0.0.1:')).id;});
+  const route=(message)=>worker.evaluate(({tabId,message})=>frameRouter.route(tabId,message),{tabId,message});
+  const prepare=()=>worker.evaluate(tabId=>frameRouter.prepare(tabId).then(r=>r.available.map(f=>({frameId:f.frameId,info:f.info}))),tabId);
+  await prepare();
+  await worker.evaluate(async tabId=>{await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:()=>{if(typeof pasteTyper!=='undefined')pasteTyper.pauseChance=0;}});},tabId);
+  const read=()=>editor.evaluate(()=>editors.map(e=>e.getValue().replace(/\r\n/g,'\n')));
+  const waitDone=async()=>{for(let i=0;i<1500;i++){const r=await route({action:'getTypingProgress'});if(!r.isTyping){assert.equal(r.error,null);return;}await new Promise(r=>setTimeout(r,30));}throw Error('typing timed out');};
+  await route({action:'startTyping',text:'XYZ',speed:10,typoChance:0,targetElement:true});await waitDone();
+  assert.deepEqual(await read(),['abcXYZdef','SECOND']);assert.equal(await page.locator('#outside').inputValue(),'OUTSIDE');console.log('PASS cross-origin target + middle insertion + unrelated editor untouched');
+  await editor.evaluate(()=>{for(let i=0;i<3;i++)editors[0].trigger('test','undo');});assert.equal((await read())[0],'abcdef');console.log('PASS undo');
+  await editor.evaluate(()=>editors[1].setSelection({startLineNumber:1,startColumn:2,endLineNumber:1,endColumn:5}));
+  await editor.locator('#two textarea.inputarea').focus();
+  await route({action:'toggleFloatingUI'});
+  await page.locator('#paste-typer-floating-ui').locator('#textInput').fill('selection');
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').click();
+  await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Typing started!'}).waitFor();await waitDone();
+  assert.deepEqual(await read(),['abcdef','SselectionND']);console.log('PASS floating UI retains selected editor and selection');
+  await editor.evaluate(()=>editors[1].setPosition({lineNumber:1,column:2}));await editor.locator('#two textarea.inputarea').focus();
+  await route({action:'startTyping',text:'\nQ',speed:10,typoChance:0,targetElement:true});await waitDone();assert.equal((await read())[1],'S\nQselectionND');console.log('PASS newline');
+  // Real native key handling for typo correction.
+  await route({action:'startTyping',text:'abcdefghij',speed:10,typoChance:1,targetElement:true});await waitDone();assert.ok((await read())[1].includes('QabcdefghijselectionND'));console.log('PASS forced typo + backspace corrections');
+  await route({action:'resetTyping'});assert.equal((await read())[1],'');assert.equal((await read())[0],'abcdef');console.log('PASS explicit clear only selected Monaco');
+  // Repeated discovery does not redeclare classes or duplicate UI listeners.
+  await Promise.all([prepare(),prepare(),prepare()]);console.log('PASS concurrent/repeated injection');
+  await editor.locator('#one textarea.inputarea').focus();
+  await editor.evaluate(()=>editors[0].setPosition({lineNumber:1,column:3}));
+  const popup=await context.newPage();await popup.goto(`chrome-extension://${extensionInfo.id}/popup.html`);
+  // A headless extension-page tab is itself "active"; the test scope pins tabs
+  // query to the invoked web tab. Popup behavior and runtime messages are real.
+  await popup.evaluate(id=>{chrome.tabs.query=async()=>[ {id,url:'http://127.0.0.1/'} ];},tabId);
+  await popup.reload();
+  await popup.evaluate(id=>{chrome.tabs.query=async()=>[ {id,url:'http://127.0.0.1/'} ];},tabId);
+  await popup.locator('#textInput').fill('popup');await popup.locator('#speedSlider').fill('10');
+  await popup.locator('#typoChanceSlider').fill('0');await popup.locator('#startTyping').click();
+  await popup.locator('#status').filter({hasText:'Typing started!'}).waitFor({timeout:3000});await waitDone();
+  assert.equal((await read())[0],'abpopupcdef');console.log('PASS popup after losing page focus, saved caret');
+  const indented='    int n = 1;\r\n    n++;\r\n';
+  await popup.locator('#textInput').fill(indented);await popup.locator('#startTyping').click();
+  await popup.locator('#status').filter({hasText:'Typing started!'}).waitFor({timeout:3000});await waitDone();
+  assert.equal((await read())[0],'abpopup'+indented.replace(/\r\n/g,'\n')+'cdef');console.log('PASS popup preserves leading indentation and trailing newlines');
+  await editor.evaluate(()=>{
+    editors[0].setValue('');monaco.editor.setModelLanguage(editors[0].getModel(),'cpp');
+    editors[0].updateOptions({autoIndent:'full',autoIndentOnPaste:true,autoClosingBrackets:'always',autoClosingQuotes:'always'});
+    editors[0].focus();
+    const names=['autoIndent','autoClosingBrackets','autoClosingQuotes','autoClosingOvertype','autoSurround','formatOnType','acceptSuggestionOnEnter'];
+    window.inputOptionsBefore=names.map(name=>editors[0].getOption(monaco.editor.EditorOption[name]));
+    window.inputEvents=[];window.pasteCount=0;
+    const input=editors[0].getDomNode().querySelector('textarea.inputarea');
+    input.addEventListener('input',event=>inputEvents.push(event.inputType));
+    input.addEventListener('paste',()=>pasteCount++);
+    // Prove this path uses editor input handlers, never direct executeEdits.
+    editors[0].executeEdits=()=>{throw Error('Direct model edits are prohibited by this test');};
+  });
+  const code='int main() {\n    // Вывод текста на экран\n    printf("Привет! Это простая программа на C.\\n");\n\n    int num1, num2, sum;\n\n    // Запрос ввода от пользователя\n    printf("Введите первое целое число: ");\n    scanf("%d", &num1);\n\n    printf("Введите второе целое число: ");\n    scanf("%d", &num2);\n\n    // Математическая операция\n    sum = num1 + num2;\n\n    // Вывод результата\n    printf("Сумма чисел %d и %d равна: %d\\n", num1, num2, sum);\n\n    return 0;\n}\n';
+  await popup.locator('#textInput').fill(code);await popup.locator('#startTyping').click();
+  await popup.locator('#status').filter({hasText:'Typing started!'}).waitFor({timeout:3000});await waitDone();
+  assert.equal((await read())[0],code);console.log('PASS exact multiline C sample, auto-indent and auto-closing enabled');
+  const inputProof=await editor.evaluate(()=>({pasteCount,inputEvents,before:inputOptionsBefore,
+    after:['autoIndent','autoClosingBrackets','autoClosingQuotes','autoClosingOvertype','autoSurround','formatOnType','acceptSuggestionOnEnter'].map(name=>editors[0].getOption(monaco.editor.EditorOption[name]))}));
+  assert.equal(inputProof.pasteCount,0);assert.ok(inputProof.inputEvents.length>0);
+  assert.ok(inputProof.inputEvents.every(type=>type==='insertText'));
+  assert.deepEqual(inputProof.after,inputProof.before);console.log('PASS simulated input only, no paste/model edits, editor options restored');
+  await editor.evaluate(()=>{
+    editors[0].setValue('UNCHANGED');editors[0].setPosition({lineNumber:1,column:1});editors[0].focus();
+    window.blockKey=event=>{if(event.key==='X')event.preventDefault();};
+    editors[0].getDomNode().querySelector('textarea.inputarea').addEventListener('keydown',blockKey,true);
+  });
+  await route({action:'startTyping',text:'XYZ',speed:10,typoChance:0,targetElement:true});
+  let failed;
+  for(let i=0;i<100;i++){failed=await route({action:'getTypingProgress'});if(!failed.isTyping)break;await new Promise(r=>setTimeout(r,30));}
+  assert.ok(failed.error.includes('intercepted'));assert.equal((await read())[0],'UNCHANGED');
+  const afterFailure=await editor.evaluate(()=>{
+    editors[0].getDomNode().querySelector('textarea.inputarea').removeEventListener('keydown',blockKey,true);
+    return ['autoIndent','autoClosingBrackets','autoClosingQuotes','autoClosingOvertype','autoSurround','formatOnType','acceptSuggestionOnEnter'].map(name=>editors[0].getOption(monaco.editor.EditorOption[name]));
+  });
+  assert.deepEqual(afterFailure,inputProof.before);console.log('PASS intercepted input fails, preserves text and restores options');
+
+ }finally{await context?.close();server.close();if(path.dirname(scratch)===path.resolve(os.tmpdir()) && path.basename(scratch).startsWith('paste-typer-test-'))fs.rmSync(scratch,{recursive:true,force:true});}
+})().catch(e=>{console.error(e);server.close();process.exitCode=1;});

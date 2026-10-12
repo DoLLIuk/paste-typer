@@ -101,7 +101,7 @@ class FloatingUIController {
   }
 
   async startTyping() {
-    const text = this.textInput.value.trim();
+    const text = this.textInput.value;
 
     if (!text) {
       this.showStatus('Please enter some text to type', 'error');
