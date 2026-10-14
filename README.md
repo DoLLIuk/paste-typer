@@ -107,7 +107,7 @@ content/
   adapterManager.js        picks the adapter for the page
 frameRouter.js             selects and addresses a single permitted frame
 popup.html / popup.js              toolbar popup
-floating-ui.html / floating-ui.js  in-page floating UI
+floating-ui.html / floating-ui.js  floating markup / isolated content-script controller
 ```
 
 ## Privacy

@@ -3,7 +3,7 @@
 const PT_CONTENT_FILES = [
   'content/inputAdapter.js', 'content/targetTracker.js',
   'content/googleDocsAdapter.js', 'content/standardInputAdapter.js',
-  'content/monacoAdapter.js', 'content/adapterManager.js', 'content.js'
+  'content/monacoAdapter.js', 'content/adapterManager.js', 'floating-ui.js', 'content.js'
 ];
 
 class FrameRouter {
@@ -27,11 +27,12 @@ class FrameRouter {
       // Presence check is scoped to the current document, including navigation.
       const [probe] = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
+        world: 'ISOLATED',
         func: () => typeof pasteTyper !== 'undefined'
       });
       if (!probe.result) {
         await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [frameId] }, files: PT_CONTENT_FILES
+          target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', files: PT_CONTENT_FILES
         });
       }
       return chrome.tabs.sendMessage(tabId, { action: 'getTargetInfo' }, { frameId });

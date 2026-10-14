@@ -40,7 +40,7 @@ Keep them focused. One fix or one adapter per PR. Describe what you tested it ag
 Run the frame routing and selection regression checks with Node.js:
 
 ```bash
-node --test tests/frameRouter.test.cjs tests/targetTracker.test.cjs
+node --test tests/*.test.cjs
 ```
 
 For Monaco changes, also test a textarea-based Monaco editor in a cross-origin
@@ -70,6 +70,13 @@ browser profile. Localhost permissions are pregranted only in the disposable
 extension copy, while permission denial is covered by the Node tests. The popup
 is represented by an extension-page tab whose tab query is pinned to the fixture.
 No test dependencies are needed to run or build the extension itself.
+
+Floating UI controls run in the content script's isolated world. Changes to them
+must preserve the trusted-event checks: page scripts must not start/stop typing
+or access extension settings through window messages or synthetic DOM events.
+The Node checks exercise the production controller and router; the browser
+harness tests forged page messages, synthetic clicks/input, real mouse/keyboard
+activation, repeated panel opening, and popup/cross-origin editor behavior.
 
 ## Code style
 

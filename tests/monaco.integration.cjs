@@ -50,6 +50,13 @@ const server = http.createServer((req,res)=>{
   const route=(message)=>worker.evaluate(({tabId,message})=>frameRouter.route(tabId,message),{tabId,message});
   const prepare=()=>worker.evaluate(tabId=>frameRouter.prepare(tabId).then(r=>r.available.map(f=>({frameId:f.frameId,info:f.info}))),tabId);
   await prepare();
+  await worker.evaluate(()=>{
+    globalThis.testRoutedCommands=[];
+    const original=frameRouter.route.bind(frameRouter);
+    frameRouter.route=(tabId,message,...args)=>{
+      testRoutedCommands.push(message.action);return original(tabId,message,...args);
+    };
+  });
   await worker.evaluate(async tabId=>{await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:()=>{if(typeof pasteTyper!=='undefined')pasteTyper.pauseChance=0;}});},tabId);
   const read=()=>editor.evaluate(()=>editors.map(e=>e.getValue().replace(/\r\n/g,'\n')));
   const waitDone=async()=>{for(let i=0;i<1500;i++){const r=await route({action:'getTypingProgress'});if(!r.isTyping){assert.equal(r.error,null);return;}await new Promise(r=>setTimeout(r,30));}throw Error('typing timed out');};
@@ -58,11 +65,98 @@ const server = http.createServer((req,res)=>{
   await editor.evaluate(()=>{for(let i=0;i<3;i++)editors[0].trigger('test','undo');});assert.equal((await read())[0],'abcdef');console.log('PASS undo');
   await editor.evaluate(()=>editors[1].setSelection({startLineNumber:1,startColumn:2,endLineNumber:1,endColumn:5}));
   await editor.locator('#two textarea.inputarea').focus();
+  const commandCount=()=>worker.evaluate(()=>testRoutedCommands.length);
+  const startCount=()=>worker.evaluate(()=>testRoutedCommands.filter(action=>action==='startTyping').length);
+  const forgeMessages=()=>page.evaluate(()=>{
+    for(const action of ['startTyping','stopTyping','loadSettings','saveSettings','floatingUIClosed']){
+      window.postMessage({source:'paste-typer-floating-ui',direction:'to-content',requestId:'forged',
+        action,payload:{text:'FORGED',speed:10,typoChance:0,targetElement:true,settings:{text:'FORGED'}}},'*');
+    }
+  });
+  const assertNoPageCommands=async baseline=>{
+    // Observe asynchronous runtime delivery too, rather than only checking DOM.
+    for(let i=0;i<10;i++){
+      await new Promise(resolve=>setTimeout(resolve,30));assert.equal(await commandCount(),baseline);
+    }
+  };
+  const settingsBefore=await worker.evaluate(()=>chrome.storage.local.get('pasteTyperSettings'));
+  await page.evaluate(()=>{
+    window.forgedReplies=[];
+    window.addEventListener('message',event=>{
+      if(event.data?.source==='paste-typer-floating-ui' && event.data.direction==='to-floating-ui')forgedReplies.push(event.data);
+    });
+  });
+  let baseline=await commandCount();await forgeMessages();await assertNoPageCommands(baseline);
+  assert.deepEqual(await read(),['abcdef','SECOND']);
+  console.log('PASS forged page messages before opening floating UI cannot reach another origin');
   await route({action:'toggleFloatingUI'});
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor();
+  assert.equal(await page.evaluate(()=>typeof FloatingUIController),'undefined');
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('script').count(),0);
+  baseline=await commandCount();
+  await page.evaluate(()=>{
+    const root=document.getElementById('paste-typer-floating-ui').shadowRoot;
+    for(const id of ['startTyping','stopTyping','loadClipboard','closeBtn']){
+      root.getElementById(id).click();
+      root.getElementById(id).dispatchEvent(new MouseEvent('click',{bubbles:true,composed:true}));
+    }
+    root.getElementById('startTyping').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+    root.getElementById('textInput').value='FORGED';
+    for(const id of ['textInput','speedSlider','typoChanceSlider']){
+      root.getElementById(id).dispatchEvent(new InputEvent('input',{bubbles:true,composed:true}));
+    }
+  });
+  await forgeMessages();await assertNoPageCommands(baseline);
+  assert.deepEqual(await read(),['abcdef','SECOND']);
+  assert.deepEqual(await worker.evaluate(()=>chrome.storage.local.get('pasteTyperSettings')),settingsBefore);
+  assert.deepEqual(await page.evaluate(()=>forgedReplies),[]);
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor({state:'visible'});
+  console.log('PASS synthetic clicks/input and forged messages cannot route commands, save settings or close UI');
   await page.locator('#paste-typer-floating-ui').locator('#textInput').fill('selection');
+  const stored=await worker.evaluate(()=>chrome.storage.local.get('pasteTyperSettings'));
+  assert.equal(stored.pasteTyperSettings.text,'selection');
+  const header=await page.locator('#paste-typer-floating-ui').locator('#header').boundingBox();
+  await page.mouse.move(header.x+20,header.y+15);await page.mouse.down();
+  await page.mouse.move(header.x+30,header.y+35);await page.mouse.up();
+  const position=await worker.evaluate(()=>chrome.storage.local.get('floatingUIPosition'));
+  assert.equal(typeof position.floatingUIPosition.x,'number');
+  assert.equal(typeof position.floatingUIPosition.y,'number');
+  console.log('PASS trusted drag persists floating position');
+  await route({action:'toggleFloatingUI'});await route({action:'toggleFloatingUI'});
+  baseline=await startCount();
   await page.locator('#paste-typer-floating-ui').locator('#startTyping').click();
   await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Typing started!'}).waitFor();await waitDone();
+  assert.equal(await startCount()-baseline,1);
   assert.deepEqual(await read(),['abcdef','SselectionND']);console.log('PASS floating UI retains selected editor and selection');
+  await editor.evaluate(()=>editors[1].setPosition({lineNumber:1,column:2}));
+  await editor.locator('#two textarea.inputarea').focus();
+  await page.locator('#paste-typer-floating-ui').locator('#textInput').fill('K');
+  await page.locator('#paste-typer-floating-ui').locator('#speedSlider').fill('10');
+  await page.locator('#paste-typer-floating-ui').locator('#typoChanceSlider').fill('0');
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').press('Enter');
+  await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Typing started!'}).waitFor();await waitDone();
+  assert.equal((await read())[1],'SKselectionND');console.log('PASS trusted keyboard activation starts typing');
+  await editor.locator('#two textarea.inputarea').focus();
+  await page.locator('#paste-typer-floating-ui').locator('#textInput').fill('R'.repeat(200));
+  await page.locator('#paste-typer-floating-ui').locator('#speedSlider').fill('25');
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').click();
+  await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Typing started!'}).waitFor();
+  baseline=await commandCount();
+  await forgeMessages();
+  await page.evaluate(()=>document.getElementById('paste-typer-floating-ui').shadowRoot.getElementById('stopTyping').click());
+  await assertNoPageCommands(baseline);
+  assert.equal((await route({action:'getTypingProgress'})).isTyping,true);
+  await page.locator('#paste-typer-floating-ui').locator('#stopTyping').click();
+  await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Stopped'}).waitFor();
+  assert.equal((await route({action:'getTypingProgress'})).isTyping,false);
+  const stoppedText=(await read())[1];
+  await new Promise(resolve=>setTimeout(resolve,100));assert.equal((await read())[1],stoppedText);
+  console.log('PASS forged Stop cannot interrupt typing; trusted Stop halts input');
+  await page.locator('#paste-typer-floating-ui').locator('#closeBtn').click();
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor({state:'hidden'});
+  await route({action:'toggleFloatingUI'});
+  await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor({state:'visible'});
+  await editor.evaluate(()=>{editors[1].setValue('SselectionND');editors[1].setPosition({lineNumber:1,column:2});});
   await editor.evaluate(()=>editors[1].setPosition({lineNumber:1,column:2}));await editor.locator('#two textarea.inputarea').focus();
   await route({action:'startTyping',text:'\nQ',speed:10,typoChance:0,targetElement:true});await waitDone();assert.equal((await read())[1],'S\nQselectionND');console.log('PASS newline');
   // Real native key handling for typo correction.

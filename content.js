@@ -28,48 +28,12 @@ class PasteTyper {
     this.availableInputs = [];
     this.selectedInputIndex = -1;
     this.navigationMode = false;
+    this.floatingContainer = null;
+    this.floatingUIController = null;
     
     this.setupMessageListener();
-    this.setupFloatingUIBridge();
     this.setupKeyboardNavigation();
     this.loadTypoChanceSetting();
-  }
-
-  setupFloatingUIBridge() {
-    const TAG = 'paste-typer-floating-ui';
-    window.addEventListener('message', async (event) => {
-      if (event.source !== window) return;
-      const data = event.data;
-      if (!data || data.source !== TAG || data.direction !== 'to-content') return;
-
-      const { requestId, action, payload = {} } = data;
-      const reply = (response) => {
-        window.postMessage({ source: TAG, direction: 'to-floating-ui', requestId, response }, '*');
-      };
-
-      try {
-        if (action === 'startTyping') {
-          const response = await chrome.runtime.sendMessage({
-            action: 'ptRoute', message: { ...payload, action: 'startTyping' }
-          });
-          reply(response);
-        } else if (action === 'stopTyping') {
-          reply(await chrome.runtime.sendMessage({ action: 'ptRoute', message: { action: 'stopTyping' } }));
-        } else if (action === 'floatingUIClosed') {
-          reply({ success: true });
-        } else if (action === 'saveSettings') {
-          chrome.storage.local.set({ pasteTyperSettings: payload.settings }, () => reply({ success: true }));
-        } else if (action === 'loadSettings') {
-          chrome.storage.local.get(['pasteTyperSettings'], (result) => {
-            reply({ success: true, settings: result.pasteTyperSettings || null });
-          });
-        } else {
-          reply({ success: false, error: 'unknown action' });
-        }
-      } catch (error) {
-        reply({ success: false, error: error.message });
-      }
-    });
   }
 
   loadTypoChanceSetting() {
@@ -176,9 +140,6 @@ class PasteTyper {
       } else if (request.action === 'toggleFloatingUI') {
         this.toggleFloatingUI();
         sendResponse({success: true});
-      } else if (request.action === 'floatingUIClosed') {
-        // Floating UI was closed, do cleanup if needed
-        sendResponse({success: true});
       }
       return true;
     });
@@ -187,9 +148,9 @@ class PasteTyper {
   toggleFloatingUI() {
     targetTracker.capture(document.activeElement);
     // Check if Floating UI already exists
-    let floatingContainer = document.getElementById('paste-typer-floating-ui');
+    let floatingContainer = this.floatingContainer;
     
-    if (floatingContainer) {
+    if (floatingContainer?.isConnected) {
       // Toggle visibility
       if (floatingContainer.style.display === 'none') {
         floatingContainer.style.display = 'block';
@@ -202,6 +163,8 @@ class PasteTyper {
     
     // Create Floating UI container with Shadow DOM (for style isolation and drag support)
     floatingContainer = document.createElement('div');
+    this.floatingContainer = floatingContainer;
+    this.floatingUIController = null;
     floatingContainer.id = 'paste-typer-floating-ui';
     floatingContainer.style.cssText = `
       position: fixed;
@@ -238,6 +201,8 @@ class PasteTyper {
 
       // Parse the extension-owned HTML safely (no innerHTML assignment on live DOM).
       const parsed = new DOMParser().parseFromString(html, 'text/html');
+      // The template is markup only; no page-world scripts may be imported.
+      parsed.querySelectorAll('script').forEach(script => script.remove());
 
       const styles = parsed.querySelector('style');
       if (styles) {
@@ -255,9 +220,7 @@ class PasteTyper {
         }
         shadowRoot.appendChild(contentDiv);
 
-        const script = document.createElement('script');
-        script.src = chrome.runtime.getURL('floating-ui.js');
-        shadowRoot.appendChild(script);
+        this.floatingUIController = new FloatingUIController(shadowRoot, container);
       }
 
       this._setupFloatingUIDrag(container, shadowRoot);
@@ -292,6 +255,7 @@ class PasteTyper {
       header.style.userSelect = 'none';
       
       const handleMouseDown = (e) => {
+        if (e.isTrusted !== true) return;
         // Don't drag if clicking close button
         const target = e.target;
         if (target.classList && target.classList.contains('close-btn')) return;
@@ -310,6 +274,7 @@ class PasteTyper {
       };
       
       const handleDrag = (e) => {
+        if (e.isTrusted !== true) return;
         if (!dragState.isDragging) return;
         
         const x = e.clientX - dragState.dragOffset.x;
@@ -326,6 +291,7 @@ class PasteTyper {
       };
       
       const handleMouseUp = (e) => {
+        if (e.isTrusted !== true) return;
         if (!dragState.isDragging) return;
         
         dragState.isDragging = false;
@@ -370,7 +336,8 @@ class PasteTyper {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'btn btn-primary';
     closeBtn.textContent = 'Close';
-    closeBtn.addEventListener('click', () => {
+    closeBtn.addEventListener('click', event => {
+      if (event.isTrusted !== true) return;
       container.style.display = 'none';
     });
 

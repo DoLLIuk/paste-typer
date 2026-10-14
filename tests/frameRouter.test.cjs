@@ -20,7 +20,8 @@ function setup({ denied = false, running = false } = {}) {
       set: async values => Object.assign(session, values) } },
     webNavigation: { getAllFrames: async () => frames },
     permissions: { contains: async ({ origins }) => !denied && origins[0] !== 'https://advert.test/*' },
-    scripting: { executeScript: async ({ target, files }) => {
+    scripting: { executeScript: async ({ target, files, world }) => {
+      assert.equal(world, 'ISOLATED');
       const id = target.frameIds[0];
       if (files) { injected.push(id); loaded.add(id); return []; }
       return [{ result: loaded.has(id) }];
