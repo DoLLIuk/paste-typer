@@ -262,5 +262,41 @@ const server = http.createServer((req,res)=>{
   assert.equal(await page.locator('#paste-typer-floating-ui').locator('.floating-header').count(),1);
   console.log('PASS controller failure replaces partial markup with one explicit fallback panel');
 
+  // A mixed installation can leave pasteTyper in the temporal dead zone.
+  // Chrome reports the old probe's ReferenceError as a null result.
+  const failedPage=await context.newPage();
+  await failedPage.goto(`http://127.0.0.1:${port}/?failed-install`);
+  const failedTab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url).id,failedPage.url());
+  await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:()=>{
+    globalThis.fixtureStorageGet=chrome.storage.local.get;
+    chrome.storage.local.get=()=>{throw Error('fixture content initialization failure');};
+  }}),failedTab);
+  await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',
+    files:PT_CONTENT_FILES}),failedTab);
+  await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:()=>{
+    chrome.storage.local.get=globalThis.fixtureStorageGet;
+    delete globalThis.fixtureStorageGet;
+  }}),failedTab);
+  const brokenProbe=await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:()=>{
+    const hasTyper=typeof pasteTyper!=='undefined';
+    return {hasTyper,hasFloating:typeof FloatingUIController!=='undefined',
+      legacyBridge:hasTyper && typeof pasteTyper.setupFloatingUIBridge==='function'};
+  }}),failedTab);
+  assert.equal(brokenProbe[0].result,null);
+  const failure=await worker.evaluate(async tabId=>{
+    try{await frameRouter.route(tabId,{action:'startTyping',text:'must not type'});return null;}
+    catch(error){return {code:error.code,message:error.message};}
+  },failedTab);
+  assert.equal(failure.code,'PT_REFRESH_REQUIRED');
+  assert.match(failure.message,/refresh this page/);
+  await failedPage.reload();
+  await worker.evaluate(tabId=>frameRouter.prepare(tabId),failedTab);
+  await failedPage.locator('#outside').click();
+  await worker.evaluate(tabId=>frameRouter.route(tabId,{action:'startTyping',text:'OK',speed:10,typoChance:0}),failedTab);
+  await failedPage.waitForFunction(()=>document.querySelector('#outside').value.includes('OK'));
+  assert.equal(await failedPage.locator('#outside').inputValue(),'OK');
+  console.log('PASS real Chrome null-probe regression: explicit refresh requirement, then standard input typing recovers');
+  await failedPage.close();
+
  }finally{await context?.close();server.close();if(path.dirname(scratch)===path.resolve(os.tmpdir()) && path.basename(scratch).startsWith('paste-typer-test-'))fs.rmSync(scratch,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1;});

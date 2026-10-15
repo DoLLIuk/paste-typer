@@ -26,19 +26,33 @@ class FrameRouter {
     const operation = (async () => {
       // Probe dependencies too: a partial load must not leave a visible panel
       // without its isolated controller or redeclare already-loaded classes.
-      const [probe] = await chrome.scripting.executeScript({
-        target: { tabId, frameIds: [frameId] },
-        world: 'ISOLATED',
-        func: () => {
-          const hasTyper = typeof pasteTyper !== 'undefined';
-          return { hasTyper, hasFloating: typeof FloatingUIController !== 'undefined',
-            legacyBridge: hasTyper && typeof pasteTyper.setupFloatingUIBridge === 'function' };
-        }
-      });
-      const state = probe.result;
-      // An old instance still owns a page-facing message listener. Loading the
-      // new controller cannot remove that anonymous listener; require refresh.
-      if (state.legacyBridge) {
+      const probeState = async () => {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          world: 'ISOLATED',
+          func: () => {
+            try {
+              const hasTyper = typeof pasteTyper !== 'undefined';
+              return { hasTyper, hasFloating: typeof FloatingUIController !== 'undefined',
+                legacyBridge: hasTyper && typeof pasteTyper.setupFloatingUIBridge === 'function' };
+            } catch {
+              // A failed top-level const initializer leaves an uninitialized
+              // binding: even typeof throws, and reinjection cannot repair it.
+              return { initializationFailed: true };
+            }
+          }
+        });
+        return results?.[0]?.result;
+      };
+      let state = await probeState();
+      // Chrome can return a null result when an injected function fails. Retry
+      // only the read-only probe; never interpret an unknown state as unloaded.
+      if (state == null) state = await probeState();
+      const verified = state && ['hasTyper', 'hasFloating', 'legacyBridge']
+        .every(key => typeof state[key] === 'boolean');
+      // Neither an unverifiable installation nor an old instance owning a
+      // page-facing listener can be safely repaired by reinjecting classes.
+      if (!verified || state.legacyBridge) {
         const error = new Error('Paste Typer scripts changed. Reload the extension and refresh this page.');
         error.code = 'PT_REFRESH_REQUIRED';
         throw error;

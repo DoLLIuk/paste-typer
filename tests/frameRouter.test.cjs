@@ -152,6 +152,72 @@ test('partial content installation loads only the missing isolated controller on
   assert.deepEqual(injectedFiles, [['floating-ui.js']]);
 });
 
+test('a transient null probe is retried without injecting into a loaded frame', async () => {
+  const { router, chrome, injected } = setup();
+  const execute = chrome.scripting.executeScript;
+  let probes = 0;
+  chrome.scripting.executeScript = async args => {
+    if (args.func) return [{ result: ++probes === 1 ? null
+      : { hasTyper: true, hasFloating: true, legacyBridge: false } }];
+    return execute(args);
+  };
+  await router.ensure(1, 0);
+  assert.equal(probes, 2);
+  assert.equal(injected.length, 0);
+});
+
+test('missing or malformed probes require refresh without injecting or sending commands', async () => {
+  for (const response of [[], [null], [{ result: null }], [{ result: {} }],
+    [{ result: { hasTyper: true, hasFloating: true } }]]) {
+    const { router, chrome, injected, sent } = setup();
+    chrome.scripting.executeScript = async args => {
+      assert.ok(args.func, 'must not reinject when installation state is unknown');
+      return response;
+    };
+    await assert.rejects(router.route(1, { action: 'startTyping', text: 'must not type' }),
+      /Reload the extension and refresh/);
+    assert.equal(injected.length, 0);
+    assert.equal(sent.filter(command => command.message.action === 'startTyping').length, 0);
+  }
+});
+
+test('the actual probe handles a failed content initializer without throwing', async () => {
+  const { router, chrome, sent } = setup();
+  const isolated = vm.createContext({});
+  assert.throws(() => vm.runInContext('const pasteTyper = (() => { throw Error("initialization failed"); })()', isolated));
+  chrome.scripting.executeScript = async ({ func }) => {
+    assert.equal(typeof func, 'function', 'must not redeclare failed content scripts');
+    const result = vm.runInContext(`(${func.toString()})()`, isolated);
+    assert.equal(result.initializationFailed, true);
+    return [{ result }];
+  };
+  await assert.rejects(router.ensure(1, 0), /Reload the extension and refresh/);
+  assert.equal(sent.length, 0);
+});
+
+test('a retry that discovers a legacy bridge still blocks typing', async () => {
+  const { router, chrome, sent } = setup();
+  let probes = 0;
+  chrome.scripting.executeScript = async ({ func }) => {
+    assert.equal(typeof func, 'function');
+    return [{ result: ++probes === 1 ? null
+      : { hasTyper: true, hasFloating: true, legacyBridge: true } }];
+  };
+  await assert.rejects(router.ensure(1, 0), /Reload the extension and refresh/);
+  assert.equal(probes, 2);
+  assert.equal(sent.length, 0);
+});
+
+test('an unverifiable child installation cannot redirect typing to the parent', async () => {
+  const { router, chrome, sent } = setup();
+  const execute = chrome.scripting.executeScript;
+  chrome.scripting.executeScript = async args => args.func && args.target.frameIds[0] === 7
+    ? [{ result: null }] : execute(args);
+  await assert.rejects(router.route(1, { action: 'startTyping', text: 'must not type' }),
+    /Reload the extension and refresh/);
+  assert.equal(sent.filter(command => command.message.action === 'startTyping').length, 0);
+});
+
 test('a preloaded controller is not redeclared during full content installation', async () => {
   const { router, injectedFiles } = setup({ helperOnly: true });
   await router.ensure(1, 0);
