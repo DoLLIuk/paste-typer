@@ -77,6 +77,10 @@ or access extension settings through window messages or synthetic DOM events.
 The Node checks exercise the production controller and router; the browser
 harness tests forged page messages, synthetic clicks/input, real mouse/keyboard
 activation, repeated panel opening, and popup/cross-origin editor behavior.
+Set `PT_PARTIAL_INSTALL=1` when running the browser harness to preload the content
+script without its floating controller. This verifies dependency repair without
+class redeclarations. The harness also checks settings persistence after panel
+recreation and removes partial markup when controller initialization fails.
 
 ## Code style
 

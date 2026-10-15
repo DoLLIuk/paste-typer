@@ -49,6 +49,10 @@ const server = http.createServer((req,res)=>{
   const tabId=await worker.evaluate(async()=>{const tabs=await chrome.tabs.query({});return tabs.find(t=>t.url?.startsWith('http://127.0.0.1:')).id;});
   const route=(message)=>worker.evaluate(({tabId,message})=>frameRouter.route(tabId,message),{tabId,message});
   const prepare=()=>worker.evaluate(tabId=>frameRouter.prepare(tabId).then(r=>r.available.map(f=>({frameId:f.frameId,info:f.info}))),tabId);
+  if(process.env.PT_PARTIAL_INSTALL==='1'){
+    await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',
+      files:PT_CONTENT_FILES.filter(file=>file!=='floating-ui.js')}),tabId);
+  }
   await prepare();
   await worker.evaluate(()=>{
     globalThis.testRoutedCommands=[];
@@ -91,6 +95,12 @@ const server = http.createServer((req,res)=>{
   console.log('PASS forged page messages before opening floating UI cannot reach another origin');
   await route({action:'toggleFloatingUI'});
   await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor();
+  assert.equal(await page.locator('#paste-typer-floating-ui').getByText('Floating UI loaded',{exact:true}).count(),0);
+  assert.equal(await worker.evaluate(async tabId=>{
+    const [result]=await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',
+      func:()=>typeof FloatingUIController==='function' && !!pasteTyper.floatingUIController});
+    return result.result;
+  },tabId),true);
   assert.equal(await page.evaluate(()=>typeof FloatingUIController),'undefined');
   assert.equal(await page.locator('#paste-typer-floating-ui').locator('script').count(),0);
   baseline=await commandCount();
@@ -152,10 +162,35 @@ const server = http.createServer((req,res)=>{
   const stoppedText=(await read())[1];
   await new Promise(resolve=>setTimeout(resolve,100));assert.equal((await read())[1],stoppedText);
   console.log('PASS forged Stop cannot interrupt typing; trusted Stop halts input');
+  // Mock only the isolated clipboard API, never the user's OS clipboard.
+  await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:()=>{
+    globalThis.fixtureClipboardReads=0;
+    navigator.clipboard.readText=async()=>{fixtureClipboardReads++;return 'clipboard fixture';};
+  }}),tabId);
+  await page.locator('#paste-typer-floating-ui').locator('#loadClipboard').click();
+  await page.locator('#paste-typer-floating-ui').locator('#status').filter({hasText:'Clipboard text loaded'}).waitFor();
+  // Playwright range.fill dispatches an untrusted event; use native keyboard
+  // adjustment for the user action that should persist each prepared value.
+  await page.locator('#paste-typer-floating-ui').locator('#speedSlider').fill('72');
+  await page.locator('#paste-typer-floating-ui').locator('#speedSlider').press('ArrowRight');
+  await page.locator('#paste-typer-floating-ui').locator('#typoChanceSlider').fill('10');
+  await page.locator('#paste-typer-floating-ui').locator('#typoChanceSlider').press('ArrowRight');
   await page.locator('#paste-typer-floating-ui').locator('#closeBtn').click();
   await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor({state:'hidden'});
   await route({action:'toggleFloatingUI'});
   await page.locator('#paste-typer-floating-ui').locator('#startTyping').waitFor({state:'visible'});
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#textInput').inputValue(),'clipboard fixture');
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#speedSlider').inputValue(),'73');
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#typoChanceSlider').inputValue(),'11');
+  const savedSettings=await worker.evaluate(()=>chrome.storage.local.get('pasteTyperSettings'));
+  assert.deepEqual(savedSettings.pasteTyperSettings,{text:'clipboard fixture',speed:'73',typoChance:'11'});
+  // Recreate, rather than just show, the panel to exercise storage loading too.
+  await page.locator('#paste-typer-floating-ui').evaluate(host=>host.remove());
+  await route({action:'toggleFloatingUI'});
+  await page.waitForFunction(()=>document.getElementById('paste-typer-floating-ui')?.shadowRoot?.getElementById('textInput')?.value==='clipboard fixture');
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#speedSlider').inputValue(),'73');
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#typoChanceSlider').inputValue(),'11');
+  console.log('PASS clipboard handler and settings persist through close/reopen and panel recreation');
   await editor.evaluate(()=>{editors[1].setValue('SselectionND');editors[1].setPosition({lineNumber:1,column:2});});
   await editor.evaluate(()=>editors[1].setPosition({lineNumber:1,column:2}));await editor.locator('#two textarea.inputarea').focus();
   await route({action:'startTyping',text:'\nQ',speed:10,typoChance:0,targetElement:true});await waitDone();assert.equal((await read())[1],'S\nQselectionND');console.log('PASS newline');
@@ -216,6 +251,16 @@ const server = http.createServer((req,res)=>{
     return ['autoIndent','autoClosingBrackets','autoClosingQuotes','autoClosingOvertype','autoSurround','formatOnType','acceptSuggestionOnEnter'].map(name=>editors[0].getOption(monaco.editor.EditorOption[name]));
   });
   assert.deepEqual(afterFailure,inputProof.before);console.log('PASS intercepted input fails, preserves text and restores options');
+  await worker.evaluate(tabId=>chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'ISOLATED',func:()=>{
+    // Force failure after markup import, as in the reported missing controller.
+    FloatingUIController=class { constructor(){throw Error('fixture controller initialization failure');} };
+  }}),tabId);
+  await page.locator('#paste-typer-floating-ui').evaluate(host=>host.remove());
+  await route({action:'toggleFloatingUI'});
+  await page.locator('#paste-typer-floating-ui').getByText('Floating UI could not load. Reload the extension and refresh this page.',{exact:true}).waitFor();
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('#startTyping').count(),0);
+  assert.equal(await page.locator('#paste-typer-floating-ui').locator('.floating-header').count(),1);
+  console.log('PASS controller failure replaces partial markup with one explicit fallback panel');
 
  }finally{await context?.close();server.close();if(path.dirname(scratch)===path.resolve(os.tmpdir()) && path.basename(scratch).startsWith('paste-typer-test-'))fs.rmSync(scratch,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1;});

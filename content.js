@@ -226,6 +226,9 @@ class PasteTyper {
       this._setupFloatingUIDrag(container, shadowRoot);
     } catch (error) {
       console.error('[PasteTyper] Failed to load Floating UI:', error);
+      // Do not leave the uninitialized full panel above the fallback controls.
+      shadowRoot.replaceChildren();
+      this.floatingUIController = null;
       this._createInlineFloatingUI(shadowRoot, container);
     }
   }
@@ -331,7 +334,7 @@ class PasteTyper {
     body.className = 'floating-container';
 
     const note = document.createElement('p');
-    note.textContent = 'Floating UI loaded';
+    note.textContent = 'Floating UI could not load. Reload the extension and refresh this page.';
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'btn btn-primary';

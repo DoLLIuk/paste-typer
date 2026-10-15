@@ -4,10 +4,12 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 
-function setup({ denied = false, running = false } = {}) {
+function setup({ denied = false, running = false, partial = false, legacy = false, legacyFrame = 0, helperOnly = false } = {}) {
   const sent = [];
   const injected = [];
-  const loaded = new Set();
+  const loaded = new Set(partial ? [0] : legacy ? [legacyFrame] : []);
+  const floatingLoaded = new Set(helperOnly ? [0] : []);
+  const injectedFiles = [];
   const session = {};
   const listeners = [];
   const frames = [
@@ -23,8 +25,13 @@ function setup({ denied = false, running = false } = {}) {
     scripting: { executeScript: async ({ target, files, world }) => {
       assert.equal(world, 'ISOLATED');
       const id = target.frameIds[0];
-      if (files) { injected.push(id); loaded.add(id); return []; }
-      return [{ result: loaded.has(id) }];
+      if (files) {
+        injected.push(id); injectedFiles.push([...files]);
+        if (files.includes('content.js')) loaded.add(id);
+        if (files.includes('floating-ui.js')) floatingLoaded.add(id);
+        return [];
+      }
+      return [{ result: { hasTyper: loaded.has(id), hasFloating: floatingLoaded.has(id), legacyBridge: legacy && id === legacyFrame } }];
     } },
     tabs: { sendMessage: async (tabId, message, options) => {
       sent.push({ tabId, message, options });
@@ -37,7 +44,7 @@ function setup({ denied = false, running = false } = {}) {
   };
   const context = vm.createContext({ chrome, URL, Map, Set, console });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../frameRouter.js'), 'utf8'), context);
-  return { router: vm.runInContext('frameRouter', context), sent, injected, frames, chrome, listeners,
+  return { router: vm.runInContext('frameRouter', context), sent, injected, injectedFiles, frames, chrome, listeners,
     restart: () => vm.runInContext('new FrameRouter()', context) };
 }
 
@@ -112,7 +119,7 @@ test('navigation in a frame causes reinjection into its new document', async () 
   await router.prepare(1);
   const execute = chrome.scripting.executeScript;
   chrome.scripting.executeScript = async args => args.func
-    ? [{ result: false }] : execute(args);
+    ? [{ result: { hasTyper: false, hasFloating: false, legacyBridge: false } }] : execute(args);
   await router.prepare(1);
   assert.equal(injected.filter(id => id === 7).length, 2);
 });
@@ -136,4 +143,31 @@ test('remembered frame survives a service-worker restart', async () => {
   await router.route(1, { action: 'getActiveElement' });
   frames.splice(frames.findIndex(frame => frame.frameId === 7), 1);
   await assert.rejects(restart().route(1, { action: 'startTyping' }), /removed or navigated/);
+});
+
+test('partial content installation loads only the missing isolated controller once', async () => {
+  const { router, injectedFiles } = setup({ partial: true });
+  await Promise.all([router.ensure(1, 0), router.ensure(1, 0)]);
+  await router.ensure(1, 0);
+  assert.deepEqual(injectedFiles, [['floating-ui.js']]);
+});
+
+test('a preloaded controller is not redeclared during full content installation', async () => {
+  const { router, injectedFiles } = setup({ helperOnly: true });
+  await router.ensure(1, 0);
+  assert.ok(injectedFiles[0].includes('content.js'));
+  assert.ok(!injectedFiles[0].includes('floating-ui.js'));
+});
+
+test('a legacy page-facing bridge requires refresh instead of a silent partial upgrade', async () => {
+  const { router, injected, sent } = setup({ legacy: true });
+  await assert.rejects(router.ensure(1, 0), /Reload the extension and refresh/);
+  assert.equal(injected.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+test('a legacy bridge in a child frame blocks routing instead of falling back to another origin', async () => {
+  const { router, sent } = setup({ legacy: true, legacyFrame: 7 });
+  await assert.rejects(router.route(1, { action: 'startTyping', text: 'must not type' }), /Reload the extension and refresh/);
+  assert.equal(sent.filter(command => command.message.action === 'startTyping').length, 0);
 });

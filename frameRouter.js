@@ -24,15 +24,30 @@ class FrameRouter {
     const key = `${tabId}:${frameId}`;
     if (this.pending.has(key)) return this.pending.get(key);
     const operation = (async () => {
-      // Presence check is scoped to the current document, including navigation.
+      // Probe dependencies too: a partial load must not leave a visible panel
+      // without its isolated controller or redeclare already-loaded classes.
       const [probe] = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
         world: 'ISOLATED',
-        func: () => typeof pasteTyper !== 'undefined'
+        func: () => {
+          const hasTyper = typeof pasteTyper !== 'undefined';
+          return { hasTyper, hasFloating: typeof FloatingUIController !== 'undefined',
+            legacyBridge: hasTyper && typeof pasteTyper.setupFloatingUIBridge === 'function' };
+        }
       });
-      if (!probe.result) {
+      const state = probe.result;
+      // An old instance still owns a page-facing message listener. Loading the
+      // new controller cannot remove that anonymous listener; require refresh.
+      if (state.legacyBridge) {
+        const error = new Error('Paste Typer scripts changed. Reload the extension and refresh this page.');
+        error.code = 'PT_REFRESH_REQUIRED';
+        throw error;
+      }
+      if (!state.hasTyper || !state.hasFloating) {
+        const files = state.hasTyper ? ['floating-ui.js']
+          : PT_CONTENT_FILES.filter(file => file !== 'floating-ui.js' || !state.hasFloating);
         await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', files: PT_CONTENT_FILES
+          target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', files
         });
       }
       return chrome.tabs.sendMessage(tabId, { action: 'getTargetInfo' }, { frameId });
@@ -65,7 +80,7 @@ class FrameRouter {
       } catch (error) {
         // Sandboxed, removed or inaccessible frames must not prevent the main
         // page from working. Failure of the main frame should remain visible.
-        if (frame.frameId === 0) throw error;
+        if (frame.frameId === 0 || error.code === 'PT_REFRESH_REQUIRED') throw error;
       }
     }));
     return { available, missingOrigins: [...missing].sort() };

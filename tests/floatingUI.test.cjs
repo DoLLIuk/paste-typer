@@ -36,7 +36,7 @@ function setup() {
       async set(value) { writes.push(value); }
     } },
     permissions: { contains: async () => true },
-    scripting: { executeScript: async () => [{ result: true }] },
+    scripting: { executeScript: async () => [{ result: { hasTyper: true, hasFloating: true, legacyBridge: false } }] },
     webNavigation: { getAllFrames: async () => [
       { frameId: 0, documentId: 'parent', url: 'https://parent.test/' },
       { frameId: 7, documentId: 'editor', url: 'https://editor.test/' }
